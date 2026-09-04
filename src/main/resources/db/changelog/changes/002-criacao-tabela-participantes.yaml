@@ -1,0 +1,38 @@
+databaseChangeLog:
+  - changeSet:
+      id: 002
+      author: sistema-eventos
+      changes:
+        - createTable:
+            tableName: participantes
+            columns:
+              - column:
+                  name: id
+                  type: BIGINT
+                  autoIncrement: true
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+
+              - column:
+                  name: nome
+                  type: VARCHAR(150)
+                  constraints:
+                    nullable: false
+
+              - column:
+                  name: email
+                  type: VARCHAR(255)
+                  constraints:
+                    nullable: false
+
+              - column:
+                  name: telefone
+                  type: VARCHAR(20)
+                  constraints:
+                    nullable: false
+
+        - addUniqueConstraint:
+            tableName: participantes
+            columnNames: email
+            constraintName: uk_participantes_email

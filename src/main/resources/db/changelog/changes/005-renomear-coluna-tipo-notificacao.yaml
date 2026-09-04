@@ -1,0 +1,10 @@
+databaseChangeLog:
+  - changeSet:
+      id: 005
+      author: sistema-eventos
+      changes:
+        - renameColumn:
+            tableName: notificacoes
+            oldColumnName: tipo
+            newColumnName: tipo_notificacao
+            columnDataType: VARCHAR(30)

@@ -1,0 +1,19 @@
+spring:
+  application:
+    name: sistema-eventos
+
+  datasource:
+    url: jdbc:postgresql://localhost:5432/sistema_eventos
+    username: postgres
+    password: admin
+
+  jpa:
+    hibernate:
+      ddl_auto: validate
+    show-sql: true
+    properties:
+      hibernate:
+        format_sql: true
+
+  liquibase:
+    enabled: true
