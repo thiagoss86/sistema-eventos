@@ -17,3 +17,12 @@ spring:
 
   liquibase:
     enabled: true
+
+  cloud:
+    openfeign:
+      okhttp:
+        enabled: true
+
+services:
+  notificacao:
+    url: http://localhost:8081

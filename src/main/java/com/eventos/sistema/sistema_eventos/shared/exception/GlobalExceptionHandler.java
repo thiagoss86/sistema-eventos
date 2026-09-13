@@ -68,6 +68,18 @@ public class GlobalExceptionHandler {
                 .body(response);
     }
 
+    @ExceptionHandler(ServicoIndisponivelException.class)
+    public ResponseEntity<ErroResponse> tratarServicoIndisponivel(
+            ServicoIndisponivelException ex,
+            HttpServletRequest request) {
+
+        return criarResponse(
+                HttpStatus.SERVICE_UNAVAILABLE,
+                ex.getMessage(),
+                request
+        );
+    }
+
     private ResponseEntity<ErroResponse> criarResponse(HttpStatus status, String message, HttpServletRequest request) {
         ErroResponse response = new ErroResponse(
                 LocalDateTime.now(),

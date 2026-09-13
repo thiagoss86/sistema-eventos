@@ -135,7 +135,6 @@ public class NotificacaoService {
         return new NotificacaoResponse(
                 notificacao.getId(),
                 notificacao.getParticipante().getId(),
-                notificacao.getParticipante().getNome(),
                 notificacao.getTipoNotificacao(),
                 notificacao.getMensagem(),
                 notificacao.getData(),

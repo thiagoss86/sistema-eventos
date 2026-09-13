@@ -8,7 +8,6 @@ import java.time.LocalDateTime;
 public record NotificacaoResponse(
         long id,
         long participanteId,
-        String participanteNome,
         TipoNotificacao tipo,
         String mensagem,
         LocalDateTime data,

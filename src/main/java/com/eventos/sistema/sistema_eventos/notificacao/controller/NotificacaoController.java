@@ -2,9 +2,7 @@ package com.eventos.sistema.sistema_eventos.notificacao.controller;
 
 import com.eventos.sistema.sistema_eventos.notificacao.dto.NotificacaoRequest;
 import com.eventos.sistema.sistema_eventos.notificacao.dto.NotificacaoResponse;
-import com.eventos.sistema.sistema_eventos.notificacao.entity.StatusNotificacao;
-import com.eventos.sistema.sistema_eventos.notificacao.entity.TipoNotificacao;
-import com.eventos.sistema.sistema_eventos.notificacao.service.NotificacaoService;
+import com.eventos.sistema.sistema_eventos.notificacao.service.NotificacaoIntegrationService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
@@ -24,7 +22,7 @@ import java.util.List;
 )
 public class NotificacaoController {
 
-    private final NotificacaoService notificacaoService;
+    private final NotificacaoIntegrationService notificacaoIntegrationService;
 
     @PostMapping
     @Operation(
@@ -35,7 +33,7 @@ public class NotificacaoController {
             @Valid @RequestBody NotificacaoRequest request
     ) {
 
-        NotificacaoResponse response = notificacaoService.criar(request);
+        NotificacaoResponse response = notificacaoIntegrationService.criar(request);
 
         return ResponseEntity
                 .status(HttpStatus.CREATED)
@@ -50,7 +48,7 @@ public class NotificacaoController {
     public ResponseEntity<List<NotificacaoResponse>> listarTodas() {
 
         return ResponseEntity.ok(
-                notificacaoService.buscarTodos()
+                notificacaoIntegrationService.buscarTodos()
         );
     }
 
@@ -64,46 +62,7 @@ public class NotificacaoController {
     ) {
 
         return ResponseEntity.ok(
-                notificacaoService.buscarPorId(id)
-        );
-    }
-
-    @GetMapping("/buscar/participantes/{participanteId}")
-    @Operation(
-            summary = "Buscar notificações por participante",
-            description = "Retorna todas as notificações de um participante"
-    )
-    public ResponseEntity<List<NotificacaoResponse>> buscarPorParticipantes(
-            @PathVariable Long participanteId
-    ) {
-        return ResponseEntity.ok(
-                notificacaoService.buscarPorParticipante(participanteId)
-        );
-    }
-
-    @GetMapping("/buscar/status")
-    @Operation(
-            summary = "Buscar notificações por status",
-            description = "Retorna notificações filtradas pelo status informado"
-    )
-    public ResponseEntity<List<NotificacaoResponse>> buscarPorStatus(
-            @RequestParam StatusNotificacao status
-    ) {
-        return ResponseEntity.ok(
-                notificacaoService.buscarPorStatus(status)
-        );
-    }
-
-    @GetMapping("/buscar/tipo")
-    @Operation(
-            summary = "Buscar notificações por tipo",
-            description = "Retorna notificações filtradas pelo tipo informado"
-    )
-    public ResponseEntity<List<NotificacaoResponse>> buscarPorTipo(
-            @RequestParam TipoNotificacao tipo
-    ) {
-        return ResponseEntity.ok(
-                notificacaoService.buscarPorTipoNotificacao(tipo)
+                notificacaoIntegrationService.buscarPorId(id)
         );
     }
 
@@ -117,7 +76,7 @@ public class NotificacaoController {
     ) {
 
         return ResponseEntity.ok(
-                notificacaoService.marcarComoEnviada(id)
+                notificacaoIntegrationService.marcarComEnviada(id)
         );
     }
 
@@ -130,7 +89,7 @@ public class NotificacaoController {
             @PathVariable Long id
     ) {
         return ResponseEntity.ok(
-                notificacaoService.marcarComoFalha(id)
+                notificacaoIntegrationService.marcarComFalha(id)
         );
     }
 }
