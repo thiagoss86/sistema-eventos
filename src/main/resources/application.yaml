@@ -1,12 +1,14 @@
 spring:
   application:
     name: sistema-eventos
-
+  profiles:
+    active: ${SPRING_PROFILE_ACTIVE:dev}
+  config:
+    import: optional:configserver:${CONFIG_SERVER_URL:http://localhost:8888}
   datasource:
     url: jdbc:postgresql://localhost:5432/sistema_eventos
     username: postgres
     password: admin
-
   jpa:
     hibernate:
       ddl_auto: validate
@@ -14,10 +16,8 @@ spring:
     properties:
       hibernate:
         format_sql: true
-
   liquibase:
     enabled: true
-
   cloud:
     openfeign:
       okhttp:

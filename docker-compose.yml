@@ -1,0 +1,106 @@
+services:
+
+  postgres-eventos:
+    image: postgres:16-alpine
+    container_name: postgres-eventos
+    environment:
+      POSTGRES_DB: sistema_eventos
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: admin
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres-eventos-data:/var/lib/postgresql/data
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U postgres -d sistema_eventos" ]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    networks:
+      - eventos-network
+
+  postgres-notificacao:
+    image: postgres:16-alpine
+    container_name: postgres-notificacao
+    environment:
+      POSTGRES_DB: notificacao_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: admin
+    ports:
+      - "5434:5432"
+    volumes:
+      - postgres-notificacao-data:/var/lib/postgresql/data
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U postgres -d notificacao_db" ]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    networks:
+      - eventos-network
+
+  config-server:
+    image: config-server:etapa-3
+    container_name: config-server
+    ports:
+      - "8888:8888"
+    healthcheck:
+      test: [ "CMD-SHELL", "curl -f http://localhost:8888/sistema-eventos/dev >/dev/null || exit 1" ]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    networks:
+      - eventos-network
+
+  notificacao-service:
+    image: notificacao-service:etapa-3
+    container_name: notificacao-service
+    environment:
+      SPRING_PROFILES_ACTIVE: dev
+      CONFIG_SERVER_URL: http://config-server:8888
+      DB_URL: jdbc:postgresql://postgres-notificacao:5432/notificacao_db
+      DB_USERNAME: postgres
+      DB_PASSWORD: admin
+    ports:
+      - "8081:8081"
+    depends_on:
+      config-server:
+        condition: service_healthy
+      postgres-notificacao:
+        condition: service_healthy
+    networks:
+      - eventos-network
+
+  sistema-eventos:
+    image: sistema-eventos:etapa-3
+    container_name: sistema-eventos
+    environment:
+      SPRING_PROFILES_ACTIVE: dev
+      CONFIG_SERVER_URL: http://config-server:8888
+
+      DB_URL: jdbc:postgresql://postgres-eventos:5432/sistema_eventos
+      DB_USERNAME: postgres
+      DB_PASSWORD: admin
+
+      SERVICO_NOTIFICACAO_URL: http://notificacao-service:8081
+    ports:
+      - "8080:8080"
+    depends_on:
+      config-server:
+        condition: service_healthy
+      postgres-eventos:
+        condition: service_healthy
+      notificacao-service:
+        condition: service_started
+    networks:
+      - eventos-network
+
+volumes:
+  postgres-eventos-data:
+  postgres-notificacao-data:
+
+networks:
+  eventos-network:
+    driver: bridge
