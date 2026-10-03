@@ -40,6 +40,26 @@ services:
     networks:
       - eventos-network
 
+  rabbitmq:
+    image: rabbitmq:4-management-alpine
+    container_name: rabbitmq
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    healthcheck:
+      test: [ "CMD", "rabbitmq-diagnostics", "-q", "ping" ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    networks:
+      - eventos-network
+
   config-server:
     image: config-server:etapa-3
     container_name: config-server
@@ -55,7 +75,7 @@ services:
       - eventos-network
 
   notificacao-service:
-    image: notificacao-service:etapa-3
+    image: notificacao-service:etapa-4
     container_name: notificacao-service
     environment:
       SPRING_PROFILES_ACTIVE: dev
@@ -70,11 +90,13 @@ services:
         condition: service_healthy
       postgres-notificacao:
         condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
     networks:
       - eventos-network
 
   sistema-eventos:
-    image: sistema-eventos:etapa-3
+    image: sistema-eventos:etapa-4
     container_name: sistema-eventos
     environment:
       SPRING_PROFILES_ACTIVE: dev
@@ -85,6 +107,12 @@ services:
       DB_PASSWORD: admin
 
       SERVICO_NOTIFICACAO_URL: http://notificacao-service:8081
+
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: 5672
+      RABBITMQ_USERNAME: guest
+      RABBITMQ_PASSWORD: guest
+
     ports:
       - "8080:8080"
     depends_on:
@@ -94,12 +122,15 @@ services:
         condition: service_healthy
       notificacao-service:
         condition: service_started
+      rabbitmq:
+        condition: service_healthy
     networks:
       - eventos-network
 
 volumes:
   postgres-eventos-data:
   postgres-notificacao-data:
+  rabbitmq-data:
 
 networks:
   eventos-network:

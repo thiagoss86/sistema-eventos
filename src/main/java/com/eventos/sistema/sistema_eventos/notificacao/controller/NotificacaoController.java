@@ -2,12 +2,12 @@ package com.eventos.sistema.sistema_eventos.notificacao.controller;
 
 import com.eventos.sistema.sistema_eventos.notificacao.dto.NotificacaoRequest;
 import com.eventos.sistema.sistema_eventos.notificacao.dto.NotificacaoResponse;
+import com.eventos.sistema.sistema_eventos.notificacao.messaging.NotificacaoProducer;
 import com.eventos.sistema.sistema_eventos.notificacao.service.NotificacaoIntegrationService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
-import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
@@ -23,6 +23,7 @@ import java.util.List;
 public class NotificacaoController {
 
     private final NotificacaoIntegrationService notificacaoIntegrationService;
+    private final NotificacaoProducer notificacaoProducer;
 
     @PostMapping
     @Operation(
@@ -33,11 +34,9 @@ public class NotificacaoController {
             @Valid @RequestBody NotificacaoRequest request
     ) {
 
-        NotificacaoResponse response = notificacaoIntegrationService.criar(request);
+        notificacaoProducer.enviar(request);
 
-        return ResponseEntity
-                .status(HttpStatus.CREATED)
-                .body(response);
+        return ResponseEntity.accepted().build();
     }
 
     @GetMapping

@@ -5,10 +5,12 @@ organização arquitetural, separação de responsabilidades e evolução
 gradual de um monólito modular para uma arquitetura baseada em serviços
 independentes.
 
-O projeto evoluiu em três etapas: a **Etapa 1** estruturou o monólito
+O projeto evoluiu em quatro etapas: a **Etapa 1** estruturou o monólito
 modular; a **Etapa 2** extraiu Notificação para um serviço independente;
-e a **Etapa 3** adicionou configuração externa, profiles, Spring Cloud
-Config Server, bancos independentes e containerização.
+a **Etapa 3** adicionou configuração externa, profiles, Spring Cloud
+Config Server, bancos independentes e containerização; e a **Etapa 4**
+introduziu comunicação assíncrona com RabbitMQ e processamento em lote
+com Spring Batch.
 
 ------------------------------------------------------------------------
 
@@ -16,7 +18,7 @@ Config Server, bancos independentes e containerização.
 
 O sistema permite administrar eventos, participantes, inscrições e
 notificações. A evolução foi feita progressivamente para preservar as
-regras de negócio enquanto as responsabilidades arquiteturais foram
+regras de negócio enquanto novas responsabilidades arquiteturais foram
 separadas.
 
 ### Evolução
@@ -35,13 +37,34 @@ sistema-eventos ──HTTP/OpenFeign──> notificacao-service
 Etapa 3
                          Config Server
                               |
-                 +------------+------------+
-                 |                         |
-                 v                         v
-         sistema-eventos ─────────> notificacao-service
-                 |                         |
-                 v                         v
-         postgres-eventos          postgres-notificacao
+                  +-----------+-----------+
+                  |                       |
+                  v                       v
+          sistema-eventos ───────> notificacao-service
+                  |                       |
+                  v                       v
+          postgres-eventos        postgres-notificacao
+
+Etapa 4
+                         Config Server
+                              |
+                  +-----------+-----------+
+                  |                       |
+                  v                       v
+          sistema-eventos ──HTTP──> notificacao-service
+                  |                       |
+                  |                       v
+                  |                postgres-notificacao
+                  |
+                  +── mensagem ──> RabbitMQ ──> notificacao-service
+                  |
+                  +── Spring Batch
+                        |
+                        v
+              CSV de participantes
+                        |
+                        v
+                 postgres-eventos
 ```
 
 ------------------------------------------------------------------------
@@ -54,6 +77,9 @@ Etapa 3
 -   Spring Data JPA
 -   Spring Cloud OpenFeign
 -   Spring Cloud Config
+-   Spring AMQP
+-   RabbitMQ
+-   Spring Batch
 -   PostgreSQL 16
 -   Liquibase
 -   Bean Validation
@@ -69,39 +95,47 @@ Etapa 3
 
 ## 3. Arquitetura atual
 
-A Etapa 3 é composta por três aplicações.
+A Etapa 4 mantém as três aplicações da etapa anterior e acrescenta o
+RabbitMQ como broker de mensagens, além do processamento em lote dentro
+do `sistema-eventos`.
 
 ### 3.1 sistema-eventos
 
 Aplicação principal responsável por Eventos, Participantes, Inscrições e
-pelas regras de negócio associadas. Também realiza a integração HTTP com
-o serviço de notificações.
+regras de negócio associadas.
 
-O fluxo interno segue:
+Também possui três formas de processamento/comunicação:
+
+-   HTTP/OpenFeign para operações síncronas do serviço de notificações;
+-   publicação assíncrona de criação de notificações no RabbitMQ;
+-   Spring Batch para importação de participantes por CSV.
 
 ``` text
 Cliente HTTP
      |
      v
-Controller
+sistema-eventos
      |
-     v
-Service
+     +------ REST / regras de negócio ------> postgres-eventos
      |
-     v
-Repository
+     +------ HTTP/OpenFeign ----------------> notificacao-service
      |
-     v
-PostgreSQL
+     +------ mensagem ----------------------> RabbitMQ
+     |
+     +------ Spring Batch <----------------- CSV
 ```
 
 ### 3.2 notificacao-service
 
-Serviço independente responsável pelo domínio de notificações. Possui
-persistência própria no banco `notificacao_db`.
+Serviço independente responsável pelo domínio de notificações e
+proprietário do banco `notificacao_db`.
 
-O `sistema-eventos` não acessa suas tabelas diretamente. A comunicação
-ocorre pela API HTTP do serviço.
+Na Etapa 4, a criação de notificações passa a poder ocorrer de forma
+assíncrona. O serviço consome mensagens do RabbitMQ e persiste as
+notificações em seu próprio banco.
+
+As consultas e atualizações que necessitam resposta imediata continuam
+disponíveis por HTTP/OpenFeign.
 
 ### 3.3 config-server
 
@@ -117,14 +151,43 @@ config-server
     └── notificacao-service-prod.yaml
 ```
 
+### 3.4 RabbitMQ
+
+Broker utilizado na Etapa 4 para desacoplar a publicação de uma
+notificação do seu processamento.
+
+Fluxo:
+
+``` text
+sistema-eventos
+      |
+      | publica NotificacaoRequest
+      v
+eventos.notificacao.exchange
+      |
+      | routing key: eventos.notificacao
+      v
+eventos.notificacao.queue
+      |
+      v
+notificacao-service
+      |
+      v
+notificacao_db
+```
+
 ------------------------------------------------------------------------
 
 ## 4. Organização por domínio
 
-O `sistema-eventos` continua organizado por funcionalidades de negócio:
+O `sistema-eventos` continua organizado por funcionalidades de negócio.
+Na Etapa 4 foram acrescentados os componentes de mensageria e Batch.
 
 ``` text
 com.eventos.sistema.sistema_eventos
+|
++-- config
+|   +-- RabbitMqConfig
 |
 +-- evento
 |   +-- controller
@@ -134,6 +197,13 @@ com.eventos.sistema.sistema_eventos
 |   +-- service
 |
 +-- participante
+|   +-- batch
+|   |   +-- ParticipanteBatchConfig
+|   |   +-- ParticipanteBatchController
+|   |   +-- ParticipanteCsv
+|   |   +-- ParticipanteItemReader
+|   |   +-- ParticipanteItemProcessor
+|   |   +-- ParticipanteItemWriter
 |   +-- controller
 |   +-- dto
 |   +-- entity
@@ -151,15 +221,16 @@ com.eventos.sistema.sistema_eventos
 |   +-- client
 |   +-- dto
 |   +-- integration
+|   +-- messaging
+|       +-- NotificacaoProducer
 |
 +-- shared
     +-- exception
     +-- filter
 ```
 
-Após a extração da Etapa 2, a aplicação principal mantém no domínio de
-notificação somente os componentes necessários para integração com o
-serviço independente.
+No `notificacao-service`, a Etapa 4 acrescenta o `NotificacaoConsumer`,
+responsável pelo consumo das mensagens da fila.
 
 ------------------------------------------------------------------------
 
@@ -179,7 +250,10 @@ Status:
 ### 5.2 Participante
 
 Responsável por criar, consultar, atualizar e excluir participantes,
-além das buscas por nome/e-mail e da validação de unicidade do e-mail.
+além das buscas por nome/e-mail e validação de unicidade do e-mail.
+
+Na Etapa 4, participantes também podem ser importados em lote por
+arquivo CSV.
 
 ### 5.3 Inscrição
 
@@ -191,12 +265,12 @@ Evento 1 -------- N Inscrição N -------- 1 Participante
 
 Responsabilidades:
 
--   Criar inscrições;
--   Verificar se o evento está aberto;
--   Verificar capacidade;
--   Impedir inscrições duplicadas;
--   Cancelar e reativar inscrições;
--   Consultar por evento e participante.
+-   criar inscrições;
+-   verificar se o evento está aberto;
+-   verificar capacidade;
+-   impedir inscrições duplicadas;
+-   cancelar e reativar inscrições;
+-   consultar por evento e participante.
 
 Status:
 
@@ -206,7 +280,8 @@ Status:
 ### 5.4 Notificação
 
 Na Etapa 1 fazia parte do monólito. Na Etapa 2 foi extraída para o
-`notificacao-service`.
+`notificacao-service`. Na Etapa 4, sua criação passou a utilizar
+mensageria assíncrona.
 
 Tipos:
 
@@ -223,41 +298,109 @@ Status:
 
 ## 6. Comunicação entre serviços
 
-O `sistema-eventos` consome o `notificacao-service` por HTTP utilizando
-Spring Cloud OpenFeign.
+A aplicação utiliza comunicação síncrona e assíncrona, de acordo com a
+necessidade da operação.
 
-``` text
-Cliente
-   |
-   v
-sistema-eventos
-   |
-   | OpenFeign / HTTP
-   v
-notificacao-service
-   |
-   v
-notificacao_db
-```
+### 6.1 HTTP / OpenFeign
 
-A URL do serviço é externalizada. No Docker Compose, a comunicação
-interna utiliza:
+O `sistema-eventos` continua consumindo operações do
+`notificacao-service` por HTTP utilizando Spring Cloud OpenFeign quando
+é necessária uma resposta imediata.
+
+Exemplos:
+
+-   consultar notificações;
+-   consultar notificação por ID;
+-   marcar notificação como enviada;
+-   marcar notificação como falha.
+
+No Docker Compose, a comunicação interna utiliza:
 
 ``` text
 http://notificacao-service:8081
 ```
 
-Não é utilizado `localhost` para comunicação entre containers.
+### 6.2 Mensageria / RabbitMQ
 
-Quando o serviço remoto está indisponível, a integração trata a falha e
-a aplicação principal retorna uma resposta HTTP de indisponibilidade do
-serviço.
+A criação de uma notificação não precisa bloquear a requisição original
+aguardando o processamento completo. Por isso, na Etapa 4 essa operação
+foi escolhida para comunicação assíncrona.
+
+``` text
+POST /notificacoes
+       |
+       v
+sistema-eventos
+       |
+       | NotificacaoProducer
+       v
+RabbitMQ
+       |
+       | eventos.notificacao.queue
+       v
+NotificacaoConsumer
+       |
+       v
+NotificacaoService
+       |
+       v
+notificacao_db
+```
+
+O endpoint retorna `202 Accepted`, indicando que a solicitação foi
+aceita para processamento assíncrono.
+
+A mensagem contém somente as informações necessárias ao processamento:
+
+-   `participanteId`;
+-   `tipo`;
+-   `mensagem`.
 
 ------------------------------------------------------------------------
 
-## 7. Bancos de dados
+## 7. Comportamento em indisponibilidade do consumer
 
-A Etapa 3 utiliza dois bancos PostgreSQL independentes.
+Uma característica importante da mensageria foi validada durante os
+testes.
+
+Com o `notificacao-service` temporariamente indisponível, uma mensagem
+foi publicada pelo `sistema-eventos`. O RabbitMQ manteve a mensagem na
+fila com estado `Ready`.
+
+Quando o consumer voltou a funcionar, a mensagem foi consumida e a
+notificação foi persistida.
+
+``` text
+Consumer indisponível
+
+sistema-eventos
+      |
+      v
+RabbitMQ
+      |
+      +--> mensagem aguardando na fila
+
+Consumer disponível novamente
+
+RabbitMQ
+      |
+      v
+notificacao-service
+      |
+      v
+notificacao_db
+```
+
+Esse comportamento é diferente de uma chamada REST direta: na chamada
+síncrona, a indisponibilidade do serviço remoto impede a conclusão da
+comunicação naquele momento; com o broker, a mensagem pode permanecer
+aguardando processamento.
+
+------------------------------------------------------------------------
+
+## 8. Bancos de dados
+
+São utilizados dois bancos PostgreSQL independentes.
 
 ### sistema-eventos
 
@@ -286,11 +429,12 @@ sistema-eventos                 notificacao-service
 sistema_eventos                   notificacao_db
 ```
 
-Cada serviço é proprietário de sua persistência.
+Cada serviço é proprietário de sua persistência. O `sistema-eventos` não
+acessa diretamente as tabelas do `notificacao-service`.
 
 ------------------------------------------------------------------------
 
-## 8. Liquibase
+## 9. Liquibase
 
 O `sistema-eventos` utiliza Liquibase para controlar a evolução do
 schema.
@@ -307,12 +451,11 @@ schema.
 A migration `006` remove a antiga tabela de notificações do banco
 principal após a extração dessa responsabilidade.
 
-O Hibernate do projeto principal utiliza `ddl-auto: validate`, validando
-a estrutura gerenciada pelo Liquibase sem alterá-la automaticamente.
+O Hibernate do projeto principal utiliza `ddl-auto: validate`.
 
 ------------------------------------------------------------------------
 
-## 9. Profiles e variáveis de ambiente
+## 10. Profiles e variáveis de ambiente
 
 Foram definidos os profiles:
 
@@ -325,7 +468,7 @@ O profile ativo é controlado por:
 SPRING_PROFILES_ACTIVE
 ```
 
-Configurações externalizadas:
+Principais configurações externalizadas:
 
 ``` text
 DB_URL
@@ -335,44 +478,39 @@ CONFIG_SERVER_URL
 SERVICO_NOTIFICACAO_URL
 SERVER_PORT
 SPRING_PROFILES_ACTIVE
+RABBITMQ_HOST
+RABBITMQ_PORT
+RABBITMQ_USERNAME
+RABBITMQ_PASSWORD
 ```
 
-No ambiente `dev`, os arquivos locais permitem defaults para facilitar a
-execução local. Exemplo:
+No ambiente `dev`, valores locais podem ser utilizados como defaults. No
+Docker Compose, os nomes dos serviços da rede Docker são fornecidos
+pelas variáveis de ambiente.
+
+Exemplo do RabbitMQ:
 
 ``` yaml
 spring:
-  datasource:
-    url: ${DB_URL:jdbc:postgresql://localhost:5432/sistema_eventos}
-    username: ${DB_USERNAME:postgres}
-    password: ${DB_PASSWORD:admin}
-
-  jpa:
-    show-sql: true
-    properties:
-      hibernate:
-        format_sql: true
+  rabbitmq:
+    host: ${RABBITMQ_HOST:localhost}
+    port: ${RABBITMQ_PORT:5672}
+    username: ${RABBITMQ_USERNAME:guest}
+    password: ${RABBITMQ_PASSWORD:guest}
 ```
 
-Em `prod`, a conexão com o banco depende das variáveis externas:
+No Compose:
 
 ``` yaml
-spring:
-  datasource:
-    url: ${DB_URL}
-    username: ${DB_USERNAME}
-    password: ${DB_PASSWORD}
-
-  jpa:
-    show-sql: false
-    properties:
-      hibernate:
-        format_sql: false
+RABBITMQ_HOST: rabbitmq
+RABBITMQ_PORT: 5672
+RABBITMQ_USERNAME: guest
+RABBITMQ_PASSWORD: guest
 ```
 
 ------------------------------------------------------------------------
 
-## 10. Spring Cloud Config Server
+## 11. Spring Cloud Config Server
 
 Os clientes utilizam:
 
@@ -382,17 +520,8 @@ spring:
     import: optional:configserver:${CONFIG_SERVER_URL:http://localhost:8888}
 ```
 
-O Config Server centraliza configurações de `dev` e `prod`. Entre elas
-estão a URL do serviço de notificações e as portas dos serviços.
-
-Endpoints disponíveis durante a execução local:
-
-``` text
-http://localhost:8888/sistema-eventos/dev
-http://localhost:8888/sistema-eventos/prod
-http://localhost:8888/notificacao-service/dev
-http://localhost:8888/notificacao-service/prod
-```
+O Config Server centraliza configurações de `dev` e `prod`, incluindo
+URLs e portas dependentes do ambiente.
 
 No ambiente Docker, os clientes acessam:
 
@@ -402,7 +531,186 @@ http://config-server:8888
 
 ------------------------------------------------------------------------
 
-## 11. Docker
+## 12. Spring Batch
+
+A funcionalidade escolhida para processamento em lote foi a **importação
+de participantes por arquivo CSV**.
+
+Essa operação é adequada ao Batch porque trabalha com um conjunto de
+registros que deve seguir a mesma sequência de leitura,
+validação/transformação e persistência.
+
+### 12.1 Arquivo de entrada
+
+Arquivo:
+
+``` text
+src/main/resources/batch/participantes.csv
+```
+
+Exemplo:
+
+``` csv
+nome,email,telefone
+Joao Silva,joao.batch@email.com,21999999999
+Maria Souza,maria.batch@email.com,21988888888
+Carlos Santos,carlos.batch@email.com,21977777777
+```
+
+### 12.2 Fluxo
+
+``` text
+participantes.csv
+       |
+       v
+ItemReader
+       |
+       v
+ParticipanteCsv
+       |
+       v
+ItemProcessor
+       |
+       v
+Participante
+       |
+       v
+ItemWriter
+       |
+       v
+ParticipanteRepository
+       |
+       v
+postgres-eventos
+```
+
+### 12.3 Job e Step
+
+O Job utilizado é:
+
+``` text
+importarParticipantesJob
+```
+
+O Step é:
+
+``` text
+importarParticipantesStep
+```
+
+O Step utiliza processamento orientado a chunks:
+
+``` text
+chunk(2)
+```
+
+Isso significa que os itens são processados em grupos, em vez de todo o
+arquivo ser carregado e persistido de uma única vez.
+
+### 12.4 ItemReader
+
+O `ParticipanteItemReader` utiliza `FlatFileItemReader` para ler o CSV,
+ignorando o cabeçalho e convertendo cada linha em `ParticipanteCsv`.
+
+### 12.5 ItemProcessor
+
+O `ParticipanteItemProcessor` aplica regras antes da persistência:
+
+-   remove espaços desnecessários;
+-   converte o e-mail para minúsculas;
+-   normaliza os valores;
+-   verifica se o e-mail já existe;
+-   filtra registros duplicados.
+
+Quando o e-mail já existe, o processor retorna `null`, fazendo com que o
+registro seja filtrado e não chegue ao writer.
+
+### 12.6 ItemWriter
+
+O `ParticipanteItemWriter` recebe os participantes processados e utiliza
+o `ParticipanteRepository` para persistir o chunk no banco
+`sistema_eventos`.
+
+### 12.7 Execução manual
+
+A execução automática do Job durante a inicialização foi desabilitada:
+
+``` yaml
+spring:
+  batch:
+    job:
+      enabled: false
+```
+
+O Job pode ser disparado pelo endpoint:
+
+``` text
+POST /batch/participantes/importar
+```
+
+Cada execução recebe um parâmetro `timestamp`, permitindo novas
+instâncias do Job.
+
+Resposta esperada:
+
+``` text
+202 Accepted
+```
+
+Durante os testes, o Job foi concluído com:
+
+``` text
+status: COMPLETED
+```
+
+------------------------------------------------------------------------
+
+## 13. REST x Mensageria x Batch
+
+As três abordagens possuem finalidades diferentes no projeto.
+
+### REST
+
+Adequado quando o cliente ou outro serviço precisa de uma resposta
+imediata.
+
+No projeto:
+
+-   CRUD de eventos;
+-   CRUD de participantes;
+-   inscrições;
+-   consultas de notificações;
+-   atualização do status de notificações.
+
+### Mensageria
+
+Adequada quando o processamento pode ocorrer de forma assíncrona e o
+produtor não precisa aguardar o consumer concluir o trabalho.
+
+No projeto:
+
+-   criação assíncrona de notificações.
+
+### Batch
+
+Adequado quando é necessário processar um conjunto de registros seguindo
+uma sequência estruturada.
+
+No projeto:
+
+-   importação de participantes a partir de CSV.
+
+Resumo:
+
+``` text
+REST       -> requisição/resposta imediata
+Messaging  -> comunicação assíncrona entre componentes
+Batch      -> processamento estruturado de conjuntos de dados
+```
+
+------------------------------------------------------------------------
+
+## 14. Docker
 
 Cada aplicação possui Dockerfile próprio:
 
@@ -412,27 +720,30 @@ notificacao-service/Dockerfile
 config-server/Dockerfile
 ```
 
-Imagens utilizadas:
+Imagens utilizadas na Etapa 4:
 
 ``` text
-sistema-eventos:etapa-3
-notificacao-service:etapa-3
+sistema-eventos:etapa-4
+notificacao-service:etapa-4
 config-server:etapa-3
+rabbitmq:4-management-alpine
+postgres:16-alpine
 ```
 
-A imagem do Config Server inclui `curl` para permitir seu healthcheck
-HTTP.
+O Config Server não precisou de alteração funcional na Etapa 4, portanto
+sua imagem permaneceu na versão construída na Etapa 3.
 
 ------------------------------------------------------------------------
 
-## 12. Docker Compose
+## 15. Docker Compose
 
-O ambiente integrado contém:
+O ambiente integrado da Etapa 4 contém seis containers:
 
 ``` text
 config-server
 postgres-eventos
 postgres-notificacao
+rabbitmq
 notificacao-service
 sistema-eventos
 ```
@@ -445,24 +756,25 @@ eventos-network
 
 ### Portas
 
-  Serviço                  Host   Container
-  ---------------------- ------ -----------
-  sistema-eventos          8080        8080
-  notificacao-service      8081        8081
-  config-server            8888        8888
-  postgres-eventos         5433        5432
-  postgres-notificacao     5434        5432
+  Serviço                   Host   Container
+  ---------------------- ------- -----------
+  sistema-eventos           8080        8080
+  notificacao-service       8081        8081
+  config-server             8888        8888
+  RabbitMQ AMQP             5672        5672
+  RabbitMQ Management      15672       15672
+  postgres-eventos          5433        5432
+  postgres-notificacao      5434        5432
 
 ### Volumes
 
 ``` text
 postgres-eventos-data
 postgres-notificacao-data
+rabbitmq-data
 ```
 
-`docker compose down` encerra os containers sem apagar os dados
-persistidos. A remoção dos volumes exige explicitamente
-`docker compose down -v`.
+`docker compose down` encerra os containers sem apagar os volumes.
 
 ### Healthchecks
 
@@ -470,15 +782,12 @@ Foram configurados healthchecks para:
 
 -   Config Server;
 -   PostgreSQL de eventos;
--   PostgreSQL de notificações.
-
-O `notificacao-service` aguarda o Config Server e seu banco ficarem
-saudáveis antes de iniciar, evitando a condição de corrida encontrada
-durante os testes de inicialização.
+-   PostgreSQL de notificações;
+-   RabbitMQ.
 
 ------------------------------------------------------------------------
 
-## 13. Execução com Docker Compose
+## 16. Execução com Docker Compose
 
 ### Pré-requisitos
 
@@ -489,10 +798,10 @@ durante os testes de inicialização.
 
 ### Gerar os JARs
 
-Em cada projeto:
+Nos projetos alterados:
 
 ``` bash
-mvn clean package
+mvn clean package -DskipTests
 ```
 
 ### Construir as imagens
@@ -500,24 +809,22 @@ mvn clean package
 No `sistema-eventos`:
 
 ``` bash
-docker build -t sistema-eventos:etapa-3 .
+docker build --no-cache -t sistema-eventos:etapa-4 .
 ```
 
 No `notificacao-service`:
 
 ``` bash
-docker build -t notificacao-service:etapa-3 .
+docker build --no-cache -t notificacao-service:etapa-4 .
 ```
 
-No `config-server`:
+O Config Server continua utilizando:
 
-``` bash
-docker build -t config-server:etapa-3 .
+``` text
+config-server:etapa-3
 ```
 
 ### Iniciar
-
-No diretório que contém `docker-compose.yml`:
 
 ``` bash
 docker compose up -d
@@ -535,6 +842,7 @@ Resultado esperado:
 config-server          Up (healthy)
 postgres-eventos       Up (healthy)
 postgres-notificacao   Up (healthy)
+rabbitmq               Up (healthy)
 notificacao-service    Up
 sistema-eventos        Up
 ```
@@ -547,7 +855,7 @@ docker compose down
 
 ------------------------------------------------------------------------
 
-## 14. Swagger
+## 17. Swagger
 
 Interface da aplicação principal:
 
@@ -555,12 +863,12 @@ Interface da aplicação principal:
 http://localhost:8080/swagger-ui/index.html
 ```
 
-O Swagger permite testar os endpoints da aplicação e operações que
-utilizam a integração com o `notificacao-service`.
+O Swagger permite testar os endpoints REST, a publicação assíncrona de
+notificações e o disparo manual do Job de importação.
 
 ------------------------------------------------------------------------
 
-## 15. Principais endpoints
+## 18. Principais endpoints
 
 ### Eventos
 
@@ -599,12 +907,28 @@ PATCH  /inscricoes/{id}/cancelar
 
 ### Notificações
 
-As operações de notificação são encaminhadas pelo `sistema-eventos` ao
-serviço independente por meio do cliente OpenFeign.
+``` text
+POST   /notificacoes
+GET    /notificacoes
+GET    /notificacoes/{id}
+PATCH  /notificacoes/{id}/enviada
+PATCH  /notificacoes/{id}/falha
+```
+
+O `POST /notificacoes` publica a mensagem no RabbitMQ e retorna
+`202 Accepted`.
+
+### Batch
+
+``` text
+POST /batch/participantes/importar
+```
+
+Dispara manualmente o `importarParticipantesJob`.
 
 ------------------------------------------------------------------------
 
-## 16. Validação e tratamento de exceções
+## 19. Validação e tratamento de exceções
 
 A aplicação utiliza Bean Validation, incluindo:
 
@@ -627,45 +951,56 @@ para identificação de requisições durante troubleshooting.
 
 ------------------------------------------------------------------------
 
-## 17. Testes
+## 20. Testes e validação integrada da Etapa 4
 
-Foram testados cenários relacionados a Eventos, Participantes,
-Inscrições e integração com Notificações, incluindo regras de negócio,
-validações e indisponibilidade do serviço remoto.
+A Etapa 4 foi validada localmente e no ambiente Docker Compose.
 
-Os testes automatizados podem ser executados com:
+### Mensageria
 
-``` bash
-mvn clean test
+Foram validados:
+
+-   publicação pelo `sistema-eventos`;
+-   criação da mensagem no RabbitMQ;
+-   chegada da mensagem à fila;
+-   consumo pelo `notificacao-service`;
+-   persistência no `notificacao_db`;
+-   retorno `202 Accepted`;
+-   consulta posterior da notificação;
+-   consumer temporariamente indisponível;
+-   mensagem permanecendo `Ready` no broker;
+-   processamento da mensagem após o consumer voltar.
+
+### Spring Batch
+
+Foram validados:
+
+-   leitura do `participantes.csv`;
+-   execução do `ItemReader`;
+-   execução do `ItemProcessor`;
+-   execução do `ItemWriter`;
+-   processamento em `chunk(2)`;
+-   persistência dos três participantes;
+-   filtro de e-mails já existentes;
+-   disparo manual pelo Swagger;
+-   execução dentro do Docker Compose;
+-   Job finalizado com status `COMPLETED`.
+
+### Ambiente integrado
+
+Foram verificados os seis containers:
+
+``` text
+config-server
+postgres-eventos
+postgres-notificacao
+rabbitmq
+notificacao-service
+sistema-eventos
 ```
 
 ------------------------------------------------------------------------
 
-## 18. Validação integrada da Etapa 3
-
-O ambiente completo foi validado através do Docker Compose.
-
-Foram verificados:
-
--   Inicialização dos cinco containers;
--   Healthcheck do Config Server;
--   Healthcheck dos dois PostgreSQL;
--   Carregamento das configurações centralizadas;
--   Profile `dev`;
--   Conexão de cada serviço ao próprio banco;
--   Comunicação HTTP entre os serviços;
--   Persistência através dos volumes;
--   Reinicialização com `docker compose down` e `docker compose up -d`;
--   Consulta de dados persistidos após a reinicialização;
--   Chamada pelo Swagger passando pela integração com o
-    `notificacao-service`.
-
-O teste final confirmou que o ambiente integrado sobe e funciona sem
-necessidade de reinicialização manual dos containers.
-
-------------------------------------------------------------------------
-
-## 19. Evolução arquitetural
+## 21. Evolução arquitetural
 
 ### Etapa 1 --- Monólito modular
 
@@ -693,39 +1028,40 @@ Foram implementados profiles, variáveis de ambiente, Config Server,
 banco independente por serviço, Dockerfiles, Docker Compose, volumes,
 rede e healthchecks.
 
+### Etapa 4 --- Comunicação assíncrona e processamento em lote
+
+Foram acrescentados RabbitMQ e Spring Batch.
+
 ``` text
-                       Config Server
-                            |
-               +------------+------------+
-               |                         |
-               v                         v
-       sistema-eventos ---------> notificacao-service
-               |                         |
-               v                         v
-       postgres-eventos          postgres-notificacao
+                          Config Server
+                               |
+                    +----------+----------+
+                    |                     |
+                    v                     v
+             sistema-eventos ------> notificacao-service
+                    |       HTTP            |
+                    |                       v
+                    |               postgres-notificacao
+                    |
+                    +----> RabbitMQ --------+
+                    |
+                    +----> Spring Batch
+                              |
+                              v
+                      postgres-eventos
 ```
-
-### Etapa 4
-
-A próxima etapa prevê a introdução de comunicação assíncrona e
-processamento em lote.
 
 ------------------------------------------------------------------------
 
-## 20. Reflexões da Etapa 3
+## 22. Reflexões da Etapa 3
 
-### 20.1 Quais configurações variam entre ambientes?
+### 22.1 Quais configurações variam entre ambientes?
 
 As principais são URL, usuário e senha dos bancos, portas, URL do
-serviço de notificações, profile ativo, endereço do Config Server e
-comportamento de exibição/formatação de SQL.
+serviço de notificações, profile ativo, endereço do Config Server,
+configurações do RabbitMQ e comportamento de exibição/formatação de SQL.
 
-Em desenvolvimento, alguns valores possuem defaults locais. Em produção,
-valores dependentes do ambiente são fornecidos externamente.
-
-### 20.2 Quais configurações foram externalizadas?
-
-Foram externalizadas:
+### 22.2 Quais configurações foram externalizadas?
 
 ``` text
 DB_URL
@@ -735,47 +1071,99 @@ SERVICO_NOTIFICACAO_URL
 CONFIG_SERVER_URL
 SERVER_PORT
 SPRING_PROFILES_ACTIVE
+RABBITMQ_HOST
+RABBITMQ_PORT
+RABBITMQ_USERNAME
+RABBITMQ_PASSWORD
 ```
 
-Isso evita fixar configurações dependentes do ambiente no código Java.
-
-### 20.3 Por que um serviço não deve acessar diretamente o banco de outro serviço?
+### 22.3 Por que um serviço não deve acessar diretamente o banco de outro serviço?
 
 Cada serviço deve ser proprietário de seus dados e regras. O acesso
 direto criaria forte acoplamento com o schema interno do outro serviço.
-Uma alteração de banco poderia quebrar consumidores externos.
+A comunicação por contratos HTTP ou mensagens permite que cada serviço
+evolua sua implementação e persistência de forma independente.
 
-A comunicação pela API mantém o contrato entre os serviços e permite que
-cada um evolua sua implementação e persistência de forma independente.
-
-### 20.4 Qual problema o Docker resolve?
+### 22.4 Qual problema o Docker resolve?
 
 O Docker empacota a aplicação e seu ambiente de execução em uma imagem
-reproduzível. Isso reduz diferenças entre máquinas e ambientes e permite
-executar cada componente de forma isolada.
+reproduzível, reduzindo diferenças entre máquinas e ambientes.
 
-### 20.5 Qual é a função do Docker Compose?
+### 22.5 Qual é a função do Docker Compose?
 
-O Docker Compose coordena os vários containers do ambiente. Neste
-projeto, define aplicações, bancos, Config Server, rede, volumes,
-variáveis de ambiente, healthchecks e dependências de inicialização.
+O Docker Compose coordena aplicações, bancos, Config Server, RabbitMQ,
+rede, volumes, variáveis de ambiente, healthchecks e dependências de
+inicialização.
 
-O ambiente completo pode ser iniciado com:
+### 22.6 Qual problema a configuração centralizada resolve?
 
-``` bash
-docker compose up -d
-```
-
-### 20.6 Qual problema a configuração centralizada resolve?
-
-O Config Server evita que cada serviço mantenha isoladamente todas as
-configurações dependentes de ambiente. Ele cria um ponto central para
-propriedades dos serviços e profiles, facilitando manutenção,
-padronização e separação entre código e configuração.
+O Config Server cria um ponto central para propriedades dependentes de
+ambiente, facilitando manutenção, padronização e separação entre código
+e configuração.
 
 ------------------------------------------------------------------------
 
-## 21. Repositórios
+## 23. Reflexões da Etapa 4
+
+### 23.1 Qual operação foi escolhida para execução assíncrona?
+
+Foi escolhida a criação de notificações. O `sistema-eventos` publica uma
+mensagem no RabbitMQ e o `notificacao-service` é responsável por
+consumi-la e persistir a notificação.
+
+### 23.2 Por que essa operação não precisa ser concluída durante a requisição original?
+
+A aplicação principal não precisa aguardar a persistência da notificação
+para continuar o fluxo. É suficiente confirmar que a solicitação foi
+aceita para processamento. Por isso, o endpoint retorna `202 Accepted`.
+
+Isso reduz o acoplamento temporal entre produtor e consumidor.
+
+### 23.3 O que acontece se o consumer estiver indisponível?
+
+A mensagem permanece armazenada na fila do RabbitMQ aguardando um
+consumer disponível.
+
+Esse comportamento foi testado desligando temporariamente o
+`notificacao-service`. A mensagem permaneceu `Ready` na fila e foi
+processada quando o serviço voltou.
+
+### 23.4 Qual funcionalidade foi escolhida para processamento em lote?
+
+Foi escolhida a importação de participantes por arquivo CSV.
+
+O arquivo contém múltiplos participantes que são lidos, processados e
+persistidos no banco da aplicação principal.
+
+### 23.5 Por que essa funcionalidade é adequada para Spring Batch?
+
+A importação trabalha com um conjunto de registros que segue a mesma
+sequência:
+
+``` text
+ler -> validar/normalizar -> filtrar -> persistir
+```
+
+O Spring Batch fornece uma estrutura apropriada para esse tipo de
+processamento por meio de Job, Step, ItemReader, ItemProcessor,
+ItemWriter e chunks.
+
+### 23.6 Quando utilizar REST, mensageria e Batch nesta aplicação?
+
+**REST** deve ser utilizado quando é necessária interação síncrona e
+resposta imediata, como CRUD, consultas e atualizações.
+
+**Mensageria** deve ser utilizada quando um componente pode solicitar um
+processamento sem aguardar sua conclusão, como a criação de
+notificações.
+
+**Batch** deve ser utilizado quando existe um conjunto de dados a ser
+processado de maneira estruturada, como a importação de participantes
+por CSV.
+
+------------------------------------------------------------------------
+
+## 24. Repositórios
 
 -   Sistema de Eventos: `https://github.com/thiagoss86/sistema-eventos`
 -   Serviço de Notificações:
@@ -784,7 +1172,7 @@ padronização e separação entre código e configuração.
 
 ------------------------------------------------------------------------
 
-## 22. Status
+## 25. Status
 
 ### Etapa 1
 
@@ -821,12 +1209,38 @@ padronização e separação entre código e configuração.
 -   [x] Teste integrado
 -   [x] Persistência após reinicialização
 -   [x] Documentação
--   [ ] Commit final da Etapa 3
--   [ ] Tag Git `etapa-3`
+-   [x] Commit final da Etapa 3
+-   [x] Tag Git `etapa-3`
+
+### Etapa 4
+
+-   [x] RabbitMQ
+-   [x] Producer
+-   [x] Exchange, Queue e Routing Key
+-   [x] Consumer no `notificacao-service`
+-   [x] Criação assíncrona de notificações
+-   [x] Teste com consumer indisponível
+-   [x] Persistência da mensagem até retorno do consumer
+-   [x] Spring Batch
+-   [x] Job e Step
+-   [x] ItemReader
+-   [x] ItemProcessor
+-   [x] ItemWriter
+-   [x] Processamento em chunks
+-   [x] Importação de participantes por CSV
+-   [x] Filtro de e-mails duplicados
+-   [x] Endpoint manual para execução do Job
+-   [x] Teste integrado via Docker Compose
+-   [x] Job finalizado com `COMPLETED`
+-   [x] Documentação
+-   [ ] Commit final da Etapa 4
+-   [ ] Tag Git `etapa-4`
 
 ------------------------------------------------------------------------
 
-## 23. Próxima etapa
+## 26. Situação atual
 
-A próxima evolução prevista é a **Etapa 4**, com introdução de
-comunicação assíncrona e processamento em lote.
+A implementação funcional da **Etapa 4 --- Comunicação Assíncrona e
+Processamento em Lote** está concluída e validada.
+
+Restam apenas o commit final e a criação da tag Git `etapa-4`.

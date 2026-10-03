@@ -8,3 +8,13 @@ spring:
     properties:
       hibernate:
         format_sql: true
+  rabbitmq:
+    host: ${RABBITMQ_HOST:localhost}
+    port: ${RABBITMQ_PORT:5672}
+    username: ${RABBITMQ_USERNAME:guest}
+    password: ${RABBITMQ_PASSWORD:guest}
+  batch:
+    job:
+      enabled: false
+    jdbc:
+      initialize-schema: always
