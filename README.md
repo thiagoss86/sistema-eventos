@@ -1233,8 +1233,8 @@ por CSV.
 -   [x] Teste integrado via Docker Compose
 -   [x] Job finalizado com `COMPLETED`
 -   [x] Documentação
--   [ ] Commit final da Etapa 4
--   [ ] Tag Git `etapa-4`
+-   [x] Commit final da Etapa 4
+-   [x] Tag Git `etapa-4`
 
 ------------------------------------------------------------------------
 
